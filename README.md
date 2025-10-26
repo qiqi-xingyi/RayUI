@@ -196,8 +196,7 @@ Both commands produce a distributable file in the `dist/` folder.
 ---
 
 ## 🏫 Author and Acknowledgments
-**Author:** Yuqi Zhang  
-**Affiliation:** Department of Computer Science, Kent State University  
+**Author:** Yuqi Zhang
 **Year:** 2025
 
 This tool was developed as part of a course assignment demonstrating ray tracing and semantic rendering principles.
