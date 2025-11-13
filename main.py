@@ -395,7 +395,7 @@ def render(width=600, height=600, mode="labels", projection="orthographic",
             if mode == "labels":
                 col = trace_labels(ro, rd, scene)
             else:
-                col = trace_shaded(ro, rd, scene, depth=0, max_reflect_depth=max_reflect_depth)
+                col = trace_shaded(ro, rd, scene, depth=0, max_depth=max_reflect_depth)
             img[y, x] = col
 
     img8 = np.clip(img * 255.0, 0, 255).astype(np.uint8)
