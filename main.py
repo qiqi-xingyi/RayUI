@@ -4,12 +4,6 @@
 # @Email : yzhan135@kent.edu
 # @File:main.py
 
-# --*-- conding:utf-8 --*--
-# @time:10/26/22 15:07
-# @Author : Yuqi Zhang
-# @Email : yzhan135@kent.edu
-# @File:main.py
-
 
 # Notes:
 #   - "Open Image..." is for viewing your input reference; it does not affect label rendering.
