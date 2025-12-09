@@ -1,6 +1,8 @@
 # --*-- conding:utf-8 --*--
-# Project 3 Implementation
-# Includes: Recursive Ray Tracing, Reflection, Refraction (Transparency), Shadows
+# @time:12/8/25 19:50
+# @Author : Yuqi Zhang
+# @Email : yzhan135@kent.edu
+# @File:Main.py
 
 import math
 import threading
