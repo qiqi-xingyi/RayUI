@@ -362,7 +362,7 @@ def trace_shaded(ro: np.ndarray, rd: np.ndarray, scene: Scene, depth=0, max_dept
     reflect_color = np.zeros(3, dtype=np.float32)
     if m.reflectivity > 0.0:
         refl_dir = normalize(reflect(-view_dir, n))
-        # Bias slightly to prevent self-intersection
+        # Bias slightly away from surface (p + n) to prevent self-intersection
         reflect_color = trace_shaded(p + 1e-4 * n, refl_dir, scene, depth + 1, max_depth)
 
     # 3. Refraction (Recursive)
@@ -371,9 +371,10 @@ def trace_shaded(ro: np.ndarray, rd: np.ndarray, scene: Scene, depth=0, max_dept
         refr_dir = refract(rd, n, m.ior)
         if refr_dir is not None:
             refr_dir = normalize(refr_dir)
-            # Bias slightly inwards/outwards depending on direction
-            # Assuming thin/solid object entry
-            refract_color = trace_shaded(p - 1e-4 * n, refr_dir, scene, depth + 1, max_depth)
+            # FIX: Use refr_dir to bias the origin point forward.
+            # Do NOT use the normal vector here, as it might push the ray back into the object
+            # when the ray is trying to exit, causing a self-intersection trap (black pixels).
+            refract_color = trace_shaded(p + 1e-3 * refr_dir, refr_dir, scene, depth + 1, max_depth)
         else:
             # Total Internal Reflection: Energy usually adds to reflection; ignoring for simplicity here
             pass
