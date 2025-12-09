@@ -1,23 +1,17 @@
 # --*-- conding:utf-8 --*--
-# @time:10/26/22 15:07
-# @Author : Yuqi Zhang
-# @Email : yzhan135@kent.edu
-# @File:main.py
-
-
-# Notes:
-#   - "Open Image..." is for viewing your input reference; it does not affect label rendering.
-#   - For macOS Tk's file dialog, filetypes use tuple forms (no semicolon-separated patterns).
+# Project 3 Implementation
+# Includes: Recursive Ray Tracing, Reflection, Refraction (Transparency), Shadows
 
 import math
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 from PIL import Image, ImageTk
+
 
 # ------------------------------
 # Math utilities
@@ -26,8 +20,41 @@ def normalize(v: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(v)
     return v / n if n > 0 else v
 
+
 def reflect(I: np.ndarray, N: np.ndarray) -> np.ndarray:
     return I - 2.0 * np.dot(I, N) * N
+
+
+def refract(I: np.ndarray, N: np.ndarray, ior: float) -> Optional[np.ndarray]:
+    """
+    Calculate refraction vector using Snell's Law.
+    I: Incident vector (Normalized)
+    N: Normal vector (Normalized)
+    ior: Index of Refraction of the target medium
+    Returns: Refracted vector, or None if Total Internal Reflection occurs.
+    """
+    cosi = np.clip(np.dot(I, N), -1.0, 1.0)
+    etai = 1.0
+    etat = ior
+    n = N
+
+    # Determine if the ray is entering the object or leaving it
+    if cosi < 0:
+        cosi = -cosi
+    else:
+        # Swap indices of refraction and invert normal if leaving
+        etai, etat = etat, etai
+        n = -N
+
+    eta = etai / etat
+    k = 1.0 - eta * eta * (1.0 - cosi * cosi)
+
+    # Total Internal Reflection (TIR)
+    if k < 0.0:
+        return None
+
+    return eta * I + (eta * cosi - math.sqrt(k)) * n
+
 
 # ------------------------------
 # Materials and primitives
@@ -40,6 +67,9 @@ class Material:
     ks: float = 0.5
     shininess: float = 32.0
     reflectivity: float = 0.0
+    transparency: float = 0.0  # New: Transparency (0.0 - 1.0)
+    ior: float = 1.0  # New: Index of Refraction (e.g., Glass ~1.5)
+
 
 class Primitive:
     class_name: str = "object"
@@ -47,6 +77,7 @@ class Primitive:
 
     def intersect(self, ro: np.ndarray, rd: np.ndarray):
         raise NotImplementedError
+
 
 class Sphere(Primitive):
     def __init__(self, center, radius, material: Material, class_name="sphere"):
@@ -76,6 +107,7 @@ class Sphere(Primitive):
         n = normalize(p - self.center)
         return (t, n, self.material, p, self)
 
+
 class Plane(Primitive):
     def __init__(self, normal, d, material: Material, class_name="plane"):
         self.normal = normalize(np.array(normal, dtype=np.float32))
@@ -93,17 +125,18 @@ class Plane(Primitive):
         p = ro + t * rd
         return (t, self.normal, self.material, p, self)
 
+
 # ------------------------------
 # Triangle mesh primitive
 # ------------------------------
 class TriangleMesh(Primitive):
     def __init__(
-        self,
-        obj_path: str,
-        material: Material,
-        scale=1.0,
-        translation=(0.0, 0.0, 0.0),
-        class_name: str = "mesh_object",
+            self,
+            obj_path: str,
+            material: Material,
+            scale=1.0,
+            translation=(0.0, 0.0, 0.0),
+            class_name: str = "mesh_object",
     ):
         self.material = material
         self.class_name = class_name
@@ -111,25 +144,28 @@ class TriangleMesh(Primitive):
         positions = []
         faces = []
 
-        with open(obj_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split()
-                if parts[0] == "v" and len(parts) >= 4:
-                    x, y, z = map(float, parts[1:4])
-                    positions.append([x, y, z])
-                elif parts[0] == "f" and len(parts) >= 4:
-                    idx = []
-                    for token in parts[1:4]:
-                        items = token.split("/")
-                        vi = int(items[0]) - 1
-                        idx.append(vi)
-                    faces.append(idx)
-
-        if not positions or not faces:
-            raise ValueError(f"OBJ load failed or empty: {obj_path}")
+        try:
+            with open(obj_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if parts[0] == "v" and len(parts) >= 4:
+                        x, y, z = map(float, parts[1:4])
+                        positions.append([x, y, z])
+                    elif parts[0] == "f" and len(parts) >= 4:
+                        idx = []
+                        for token in parts[1:4]:
+                            items = token.split("/")
+                            vi = int(items[0]) - 1
+                            idx.append(vi)
+                        faces.append(idx)
+        except Exception:
+            # If file not found, create a simple tetrahedron fallback to prevent crash
+            positions = [[0, 1, 0], [-1, -1, 1], [1, -1, 1], [0, -1, -1]]
+            faces = [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]]
+            print(f"Warning: {obj_path} not found. Using fallback geometry.")
 
         self.vertices = np.array(positions, dtype=np.float32)
         self.faces = np.array(faces, dtype=np.int32)
@@ -222,8 +258,9 @@ class TriangleMesh(Primitive):
             return None
         return (best_t, best_n, self.material, best_p, self)
 
+
 # ------------------------------
-# Light & shaders (for shaded mode)
+# Scene & Lights
 # ------------------------------
 @dataclass
 class PointLight:
@@ -233,97 +270,13 @@ class PointLight:
     Id: float = 1.20
     Is: float = 1.20
 
-def phong_shade(pos: np.ndarray, normal: np.ndarray, view_dir: np.ndarray,
-                material: Material, lights: list[PointLight]) -> np.ndarray:
-    base_color = material.color
-    col = np.zeros(3, dtype=np.float32)
-    for L in lights:
-        col += L.Ia * material.ka * base_color * L.color
-    for L in lights:
-        Ldir = normalize(L.position - pos)
-        diff = max(np.dot(Ldir, normal), 0.0)
-        R = reflect(-Ldir, normal)
-        spec = 0.0
-        if diff > 0.0:
-            spec = max(np.dot(R, view_dir), 0.0) ** material.shininess
-        col += L.Id * material.kd * diff * base_color * L.color
-        col += L.Is * material.ks * spec * L.color
-    return np.clip(col, 0.0, 1.0)
 
-# ------------------------------
-# Scene (Cornell-box-like)
-# ------------------------------
 @dataclass
 class Scene:
-    objects: list[Primitive]
-    lights: list[PointLight]
+    objects: List[Primitive]
+    lights: List[PointLight]
 
-def build_scene() -> Scene:
-    mat_left   = Material(color=np.array([1.00, 0.20, 0.20], dtype=np.float32))
-    mat_right  = Material(color=np.array([0.15, 0.35, 1.00], dtype=np.float32))
-    mat_floor  = Material(color=np.array([0.15, 0.35, 1.00], dtype=np.float32))
-    mat_ceil   = Material(color=np.array([0.15, 0.35, 1.00], dtype=np.float32))
-    mat_back   = Material(color=np.array([0.15, 1.00, 0.15], dtype=np.float32))
-    mat_small  = Material(color=np.array([1.00, 0.65, 0.00], dtype=np.float32), ks=0.2, shininess=16)
-    mat_big    = Material(color=np.array([0.00, 0.50, 0.50], dtype=np.float32), ks=0.6, shininess=64, reflectivity=0.0)
-    mat_mesh   = Material(color=np.array([0.80, 0.80, 0.80], dtype=np.float32), ks=0.6, shininess=64)
 
-    left   = Plane(normal=(-1, 0, 0), d= 1.0, material=mat_left,  class_name="left")
-    right  = Plane(normal=( 1, 0, 0), d= 1.0, material=mat_right, class_name="right")
-    floor  = Plane(normal=(0,  1, 0), d= 0.0, material=mat_floor, class_name="floor")
-    ceil   = Plane(normal=(0, -1, 0), d= 2.0, material=mat_ceil,  class_name="ceiling")
-    back   = Plane(normal=(0,  0, 1), d=-3.0, material=mat_back,  class_name="back")
-
-    smallS = Sphere(center=(-0.5, 0.3, -2.2), radius=0.3, material=mat_small, class_name="small_sphere")
-    bigS   = Sphere(center=( 0.4, 0.55, -1.2), radius=0.55, material=mat_big, class_name="big_sphere")
-
-    objects = [left, right, floor, ceil, back, smallS, bigS]
-
-    try:
-        mesh = TriangleMesh(
-            obj_path="model.obj",
-            material=mat_mesh,
-            scale=0.6,
-            translation=(0.0, 0.3, -1.8),
-            class_name="mesh_object",
-        )
-        objects.append(mesh)
-    except FileNotFoundError:
-        pass
-
-    lights = [
-        PointLight(position=np.array([ 0.0, 1.8, -1.0], dtype=np.float32),
-                   color=np.array([1.0, 1.0, 1.0], dtype=np.float32),
-                   Ia=0.10, Id=1.2, Is=1.2),
-        PointLight(position=np.array([ 0.5, 1.0, -2.5], dtype=np.float32),
-                   color=np.array([1.0, 0.95, 0.95], dtype=np.float32),
-                   Ia=0.08, Id=0.9, Is=0.8),
-    ]
-    return Scene(objects, lights)
-
-# ------------------------------
-# Label/ID color map
-# ------------------------------
-CLASS_COLORS = {
-    "back":          (0, 255, 0),
-    "left":          (255, 0, 0),
-    "right":         (0, 0, 255),
-    "floor":         (0, 0, 255),
-    "ceiling":       (0, 0, 255),
-    "small_sphere":  (255, 165, 0),
-    "big_sphere":    (0, 128, 128),
-    "mesh_object":   (255, 0, 255),
-    "object":        (255, 255, 255),
-    "background":    (0, 0, 0),
-}
-
-def class_color_rgb01(name: str) -> np.ndarray:
-    r, g, b = CLASS_COLORS.get(name, CLASS_COLORS["object"])
-    return np.array([r, g, b], dtype=np.float32) / 255.0
-
-# ------------------------------
-# Ray tracing core
-# ------------------------------
 def intersect_scene(ro: np.ndarray, rd: np.ndarray, scene: Scene):
     tmin = 1e20
     hit = None
@@ -336,20 +289,103 @@ def intersect_scene(ro: np.ndarray, rd: np.ndarray, scene: Scene):
             tmin, hit = t, (p, n, m, who)
     return hit
 
+
+# ------------------------------
+# Shading & Tracing
+# ------------------------------
+def phong_shade(pos: np.ndarray, normal: np.ndarray, view_dir: np.ndarray,
+                material: Material, scene: Scene) -> np.ndarray:
+    """
+    Calculate Phong shading model, including shadow detection.
+    """
+    base_color = material.color
+    col = np.zeros(3, dtype=np.float32)
+
+    # 1. Ambient Light - Always present
+    for L in scene.lights:
+        col += L.Ia * material.ka * base_color * L.color
+
+    # 2. Diffuse and Specular - Affected by shadows
+    for L in scene.lights:
+        Ldir_raw = L.position - pos
+        dist = np.linalg.norm(Ldir_raw)
+        Ldir = Ldir_raw / dist
+
+        # --- Shadow Detection (Shadow Ray) ---
+        # Shoot ray towards light, origin biased slightly to prevent self-intersection
+        shadow_bias = 1e-4
+        shadow_orig = pos + normal * shadow_bias
+
+        # Check if anything blocks the path to the light
+        hit = intersect_scene(shadow_orig, Ldir, scene)
+        in_shadow = False
+        if hit:
+            hit_p, _, _, _ = hit
+            # If hit distance is less than distance to light, it's occluded
+            if np.linalg.norm(hit_p - shadow_orig) < dist:
+                in_shadow = True
+
+        if not in_shadow:
+            # Diffuse
+            diff = max(np.dot(Ldir, normal), 0.0)
+            col += L.Id * material.kd * diff * base_color * L.color
+
+            # Specular
+            if diff > 0.0:
+                R = reflect(-Ldir, normal)
+                spec = max(np.dot(R, view_dir), 0.0) ** material.shininess
+                col += L.Is * material.ks * spec * L.color
+
+    return np.clip(col, 0.0, 1.0)
+
+
 def trace_shaded(ro: np.ndarray, rd: np.ndarray, scene: Scene, depth=0, max_depth=0) -> np.ndarray:
     hit = intersect_scene(ro, rd, scene)
     if not hit:
-        return np.array([0.75, 0.85, 1.0], dtype=np.float32)
+        return np.array([0.05, 0.05, 0.05], dtype=np.float32)  # Dark background
+
     p, n, m, who = hit
     view_dir = normalize(ro - p)
-    local = phong_shade(p, n, view_dir, m, scene.lights)
 
-    r = m.reflectivity if hasattr(m, "reflectivity") else 0.0
-    if r > 0.0 and depth < max_depth:
+    # 1. Local Color (Phong with Shadows)
+    local = phong_shade(p, n, view_dir, m, scene)
+
+    # Recursion termination condition
+    if depth >= max_depth:
+        return local
+
+    final_color = local
+
+    # 2. Reflection (Recursive)
+    reflect_color = np.zeros(3, dtype=np.float32)
+    if m.reflectivity > 0.0:
         refl_dir = normalize(reflect(-view_dir, n))
-        refl_col = trace_shaded(p + 1e-4 * refl_dir, refl_dir, scene, depth + 1, max_depth)
-        return (1 - r) * local + r * refl_col
-    return local
+        # Bias slightly to prevent self-intersection
+        reflect_color = trace_shaded(p + 1e-4 * n, refl_dir, scene, depth + 1, max_depth)
+
+    # 3. Refraction (Recursive)
+    refract_color = np.zeros(3, dtype=np.float32)
+    if m.transparency > 0.0:
+        refr_dir = refract(rd, n, m.ior)
+        if refr_dir is not None:
+            refr_dir = normalize(refr_dir)
+            # Bias slightly inwards/outwards depending on direction
+            # Assuming thin/solid object entry
+            refract_color = trace_shaded(p - 1e-4 * n, refr_dir, scene, depth + 1, max_depth)
+        else:
+            # Total Internal Reflection: Energy usually adds to reflection; ignoring for simplicity here
+            pass
+
+            # Simple mixing model (Linear blending)
+    # Weights normalized: (1 - refl - trans) * local + refl * Refl + trans * Refr
+    k_refl = m.reflectivity
+    k_trans = m.transparency
+    k_local = max(0.0, 1.0 - k_refl - k_trans)
+
+    final_color = k_local * local + k_refl * reflect_color + k_trans * refract_color
+
+    return np.clip(final_color, 0.0, 1.0)
+
 
 def trace_labels(ro: np.ndarray, rd: np.ndarray, scene: Scene) -> np.ndarray:
     hit = intersect_scene(ro, rd, scene)
@@ -358,11 +394,109 @@ def trace_labels(ro: np.ndarray, rd: np.ndarray, scene: Scene) -> np.ndarray:
     _, _, _, who = hit
     return class_color_rgb01(getattr(who, "class_name", "object"))
 
+
 # ------------------------------
-# Projections
+# Scene Setup
+# ------------------------------
+def build_scene() -> Scene:
+    # Color definitions
+    red = np.array([0.8, 0.1, 0.1], dtype=np.float32)
+    blue = np.array([0.1, 0.1, 0.8], dtype=np.float32)
+    grey = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+    green = np.array([0.1, 0.8, 0.1], dtype=np.float32)
+    orange = np.array([1.0, 0.6, 0.1], dtype=np.float32)
+    white = np.array([0.9, 0.9, 0.9], dtype=np.float32)
+
+    # Material definitions
+    # Left wall: Diffuse red
+    mat_left = Material(color=red, ka=0.1, kd=0.8, ks=0.1, shininess=10)
+    # Right wall: Mirror-like reflection
+    mat_right = Material(color=blue, ka=0.1, kd=0.5, ks=0.8, shininess=64, reflectivity=0.5)
+    # Floor: Slight reflection
+    mat_floor = Material(color=grey, ka=0.1, kd=0.8, ks=0.2, reflectivity=0.2)
+    # Ceiling
+    mat_ceil = Material(color=grey, ka=0.1, kd=0.8)
+    # Back wall
+    mat_back = Material(color=green, ka=0.1, kd=0.8)
+
+    # Glass sphere (Transparency & Refraction)
+    # ior=1.5 (glass), transparency=0.9, reflectivity=0.1 (Simple Fresnel approximation)
+    mat_glass = Material(color=np.array([1.0, 1.0, 1.0]), ka=0.0, kd=0.0, ks=0.8,
+                         shininess=128, reflectivity=0.1, transparency=0.9, ior=1.5)
+
+    # Mirror sphere (Reflection)
+    mat_mirror = Material(color=np.array([1.0, 1.0, 1.0]), ka=0.0, kd=0.1, ks=0.9,
+                          shininess=128, reflectivity=0.85)
+
+    mat_mesh = Material(color=orange, ks=0.4, shininess=32)
+
+    # Geometry
+    left = Plane(normal=(-1, 0, 0), d=1.0, material=mat_left, class_name="left")
+    right = Plane(normal=(1, 0, 0), d=1.0, material=mat_right, class_name="right")
+    floor = Plane(normal=(0, 1, 0), d=0.0, material=mat_floor, class_name="floor")
+    ceil = Plane(normal=(0, -1, 0), d=2.0, material=mat_ceil, class_name="ceiling")
+    back = Plane(normal=(0, 0, 1), d=-3.0, material=mat_back, class_name="back")
+
+    # Objects in scene
+    # Glass sphere on left
+    glassS = Sphere(center=(-0.4, 0.4, -1.5), radius=0.4, material=mat_glass, class_name="small_sphere")
+    # Mirror sphere on right
+    mirrorS = Sphere(center=(0.5, 0.5, -2.2), radius=0.5, material=mat_mirror, class_name="big_sphere")
+
+    objects = [left, right, floor, ceil, back, glassS, mirrorS]
+
+    try:
+        mesh = TriangleMesh(
+            obj_path="model.obj",
+            material=mat_mesh,
+            scale=0.5,
+            translation=(0.0, 0.25, -1.8),  # Centered between spheres
+            class_name="mesh_object",
+        )
+        objects.append(mesh)
+    except Exception:
+        pass
+
+    lights = [
+        # Main Light
+        PointLight(position=np.array([0.0, 1.8, -1.5], dtype=np.float32),
+                   color=np.array([1.0, 1.0, 1.0], dtype=np.float32),
+                   Ia=0.1, Id=1.0, Is=1.0),
+        # Fill Light
+        PointLight(position=np.array([0.0, 0.5, 0.0], dtype=np.float32),
+                   color=np.array([0.3, 0.3, 0.3], dtype=np.float32),
+                   Ia=0.0, Id=0.2, Is=0.2),
+    ]
+    return Scene(objects, lights)
+
+
+# ------------------------------
+# Label/ID color map
+# ------------------------------
+CLASS_COLORS = {
+    "back": (0, 255, 0),
+    "left": (255, 0, 0),
+    "right": (0, 0, 255),
+    "floor": (0, 0, 255),
+    "ceiling": (0, 0, 255),
+    "small_sphere": (255, 165, 0),
+    "big_sphere": (0, 128, 128),
+    "mesh_object": (255, 0, 255),
+    "object": (255, 255, 255),
+    "background": (0, 0, 0),
+}
+
+
+def class_color_rgb01(name: str) -> np.ndarray:
+    r, g, b = CLASS_COLORS.get(name, CLASS_COLORS["object"])
+    return np.array([r, g, b], dtype=np.float32) / 255.0
+
+
+# ------------------------------
+# Projections & Render
 # ------------------------------
 def render(width=600, height=600, mode="labels", projection="orthographic",
-           fov_deg=20.0, max_reflect_depth=0) -> Image.Image:
+           fov_deg=20.0, max_reflect_depth=3) -> Image.Image:  # Default recursion depth 3
     scene = build_scene()
     img = np.zeros((height, width, 3), dtype=np.float32)
 
@@ -371,6 +505,10 @@ def render(width=600, height=600, mode="labels", projection="orthographic",
     fov = math.radians(max(1.0, min(150.0, fov_deg)))
 
     for y in range(height):
+        # Progress print to console
+        if y % 50 == 0:
+            print(f"Rendering line {y}/{height}...")
+
         ndc_y = 1 - 2 * ((y + 0.5) / height)
         py = math.tan(fov * 0.5) * ndc_y
         for x in range(width):
@@ -379,7 +517,7 @@ def render(width=600, height=600, mode="labels", projection="orthographic",
 
             if projection == "orthographic":
                 ox = -1.0 + (ndc_x + 1.0) * 0.5 * 2.0
-                oy =  2.0 - (ndc_y + 1.0) * 0.5 * 2.0
+                oy = 2.0 - (ndc_y + 1.0) * 0.5 * 2.0
                 ro = cam_pos + np.array([ox, oy - 1.0, 0.0], dtype=np.float32)
                 rd = np.array([0.0, 0.0, -1.0], dtype=np.float32)
             else:
@@ -389,11 +527,13 @@ def render(width=600, height=600, mode="labels", projection="orthographic",
             if mode == "labels":
                 col = trace_labels(ro, rd, scene)
             else:
+                # Enable recursion, depth controlled by UI
                 col = trace_shaded(ro, rd, scene, depth=0, max_depth=max_reflect_depth)
             img[y, x] = col
 
     img8 = np.clip(img * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(img8)
+
 
 # ------------------------------
 # Tkinter UI
@@ -401,7 +541,7 @@ def render(width=600, height=600, mode="labels", projection="orthographic",
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Ray Tracing — Shaded / Labels")
+        self.title("Ray Tracing Project 3 - Shadows & Refraction")
         self.geometry("980x760")
         self.minsize(820, 600)
 
@@ -413,28 +553,31 @@ class App(tk.Tk):
 
         tk.Label(side, text="Width:").grid(row=0, column=0, sticky="w")
         tk.Label(side, text="Height:").grid(row=1, column=0, sticky="w")
-        self.width_var = tk.StringVar(value="600")
-        self.height_var = tk.StringVar(value="600")
+        self.width_var = tk.StringVar(value="400")  # Small default for faster testing
+        self.height_var = tk.StringVar(value="400")
         tk.Entry(side, textvariable=self.width_var, width=8).grid(row=0, column=1, sticky="w")
         tk.Entry(side, textvariable=self.height_var, width=8).grid(row=1, column=1, sticky="w")
 
         self.use_ref_size = tk.BooleanVar(value=False)
-        tk.Checkbutton(side, text="Use reference size", variable=self.use_ref_size).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 4))
+        tk.Checkbutton(side, text="Use reference size", variable=self.use_ref_size).grid(row=2, column=0, columnspan=2,
+                                                                                         sticky="w", pady=(4, 4))
 
         tk.Label(side, text="Render Mode:").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        self.mode_var = tk.StringVar(value="labels")
-        ttk.Combobox(side, textvariable=self.mode_var, values=["labels", "shaded"], width=12, state="readonly").grid(row=3, column=1, sticky="w")
+        self.mode_var = tk.StringVar(value="shaded")
+        ttk.Combobox(side, textvariable=self.mode_var, values=["labels", "shaded"], width=12, state="readonly").grid(
+            row=3, column=1, sticky="w")
 
         tk.Label(side, text="Projection:").grid(row=4, column=0, sticky="w")
         self.proj_var = tk.StringVar(value="perspective")
-        ttk.Combobox(side, textvariable=self.proj_var, values=["orthographic", "perspective"], width=12, state="readonly").grid(row=4, column=1, sticky="w")
+        ttk.Combobox(side, textvariable=self.proj_var, values=["orthographic", "perspective"], width=12,
+                     state="readonly").grid(row=4, column=1, sticky="w")
 
         tk.Label(side, text="FOV (deg):").grid(row=5, column=0, sticky="w")
-        self.fov_var = tk.StringVar(value="30")
+        self.fov_var = tk.StringVar(value="45")
         tk.Entry(side, textvariable=self.fov_var, width=8).grid(row=5, column=1, sticky="w")
 
-        tk.Label(side, text="Reflect depth:").grid(row=6, column=0, sticky="w")
-        self.rdepth_var = tk.StringVar(value="0")
+        tk.Label(side, text="Trace depth:").grid(row=6, column=0, sticky="w")
+        self.rdepth_var = tk.StringVar(value="3")  # Default 3 recursion layers
         tk.Entry(side, textvariable=self.rdepth_var, width=8).grid(row=6, column=1, sticky="w")
 
         self.render_btn = tk.Button(side, text="Render", command=self.on_render_click)
@@ -447,20 +590,13 @@ class App(tk.Tk):
         self.open_btn.grid(row=9, column=0, columnspan=2, sticky="we")
 
         self.status_var = tk.StringVar(value="Ready.")
-        tk.Label(side, textvariable=self.status_var, anchor="w", justify="left", wraplength=200).grid(row=10, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        tk.Label(side, textvariable=self.status_var, anchor="w", justify="left", wraplength=200).grid(row=10, column=0,
+                                                                                                      columnspan=2,
+                                                                                                      sticky="we",
+                                                                                                      pady=(10, 0))
 
         self.preview = tk.Label(self, bg="#cccccc")
         self.preview.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-
-        menubar = tk.Menu(self)
-        filemenu = tk.Menu(menubar, tearoff=0)
-        filemenu.add_command(label="Render", command=self.on_render_click)
-        filemenu.add_command(label="Open Image (Ref)...", command=self.on_open_click)
-        filemenu.add_command(label="Save Image...", command=self.on_save_click)
-        filemenu.add_separator()
-        filemenu.add_command(label="Exit", command=self.destroy)
-        menubar.add_cascade(label="File", menu=filemenu)
-        self.config(menu=menubar)
 
         self.bind("<Configure>", lambda e: self.update_preview())
 
@@ -483,7 +619,7 @@ class App(tk.Tk):
             proj = self.proj_var.get()
             fov = float(self.fov_var.get())
             rdepth = int(self.rdepth_var.get())
-            rdepth = max(0, min(3, rdepth))
+            rdepth = max(0, min(10, rdepth))
         except Exception as e:
             messagebox.showerror("Invalid Parameters", str(e))
             return
@@ -496,6 +632,7 @@ class App(tk.Tk):
             try:
                 img = render(width=w, height=h, mode=mode, projection=proj, fov_deg=fov, max_reflect_depth=rdepth)
             except Exception as e:
+                print(e)
                 self.after(0, lambda: messagebox.showerror("Render Error", str(e)))
                 self.after(0, lambda: self.set_status("Render failed."))
                 self.after(0, lambda: self.render_btn.config(state=tk.NORMAL))
@@ -553,6 +690,7 @@ class App(tk.Tk):
         img.thumbnail((max_w, max_h), Image.LANCZOS)
         self._tk_image = ImageTk.PhotoImage(img)
         self.preview.config(image=self._tk_image)
+
 
 if __name__ == "__main__":
     app = App()
