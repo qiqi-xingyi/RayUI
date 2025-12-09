@@ -1,4 +1,4 @@
-、RayUI — Recursive Ray Tracer (Project 3)
+RayUI — Recursive Ray Tracer (Project 3)
 ==================================================================
 
 Overview
